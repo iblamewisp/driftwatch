@@ -1,0 +1,89 @@
+version: "3.9"
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  env_file:
+    - ../.env
+  restart: unless-stopped
+
+x-db-deps: &db-deps
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    litserve:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: driftwatch
+      POSTGRES_PASSWORD: driftwatch
+      POSTGRES_DB: driftwatch
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U driftwatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  litserve:
+    build:
+      context: ..
+      dockerfile: Dockerfile.litserve
+    command: python server.py
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  proxy:
+    <<: [*app, *db-deps]
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  celery_worker:
+    <<: [*app, *db-deps]
+    command: >
+      sh -c "alembic upgrade head &&
+             celery -A workers.celery_app worker -Q evaluator,detection --concurrency 2 --loglevel=info"
+
+  clustering:
+    <<: [*app, *db-deps]
+    command: python -m services.clustering.service
+
+  celery_beat:
+    <<: *app
+    command: celery -A workers.celery_app beat --loglevel=info
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
