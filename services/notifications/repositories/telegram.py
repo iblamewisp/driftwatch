@@ -1,4 +1,4 @@
-import requests
+import httpx
 
 from app.schemas.notifications import DriftAlertPayload
 from monitoring.logging import get_logger
@@ -13,7 +13,7 @@ class TelegramNotificationService(AbstractNotificationService):
         self._bot_token = bot_token
         self._chat_id = chat_id
 
-    def send_alert(self, payload: DriftAlertPayload) -> None:
+    async def send_alert(self, payload: DriftAlertPayload) -> None:
         message = (
             f"*Driftwatch Alert*\n\n"
             f"{payload.summary}\n\n"
@@ -23,10 +23,10 @@ class TelegramNotificationService(AbstractNotificationService):
             f"Time:     `{payload.detected_at.isoformat()}`"
         )
         url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
-        response = requests.post(
-            url,
-            json={"chat_id": self._chat_id, "text": message, "parse_mode": "Markdown"},
-            timeout=10,
-        )
-        response.raise_for_status()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                url,
+                json={"chat_id": self._chat_id, "text": message, "parse_mode": "Markdown"},
+            )
+            response.raise_for_status()
         logger.info("telegram_alert_sent", chat_id=self._chat_id)

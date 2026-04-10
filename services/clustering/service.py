@@ -64,31 +64,41 @@ async def _process_batch(entries: list[dict]) -> None:
     request_embeddings = all_embeddings[::2]
     response_embeddings = all_embeddings[1::2]
 
-    vector_store = get_vector_store()
-
-    for response_id, req_emb, resp_emb, response_text in zip(
-        response_ids, request_embeddings, response_embeddings, response_texts
-    ):
+    # Assign clusters in parallel — absorption path is fully independent per item.
+    # Advisory lock serializes only the rare "create new cluster" branch on the DB side.
+    async def _assign(response_id: UUID, req_emb: list[float], resp_emb: list[float]) -> UUID:
         async with AsyncSessionLocal() as session:
-            cluster_id = await assign_cluster(session, response_id, req_emb, resp_emb)
+            return await assign_cluster(session, response_id, req_emb, resp_emb)
 
-        if settings.GOLDEN_SET_MODE == "auto":
-            count = await vector_store.count_golden(cluster_id=cluster_id)
-            if count < settings.GOLDEN_SET_WARMUP:
-                await vector_store.insert_golden(
-                    prompt=response_text,           # what a good response looks like
-                    embedding=resp_emb,             # response embedding for quality scoring
-                    description="auto",
-                    cluster_id=cluster_id,
-                    request_embedding=req_emb,      # stored for cluster reassignment on split
-                )
-                logger.info(
-                    "golden_set_entry_added",
-                    cluster_id=str(cluster_id),
-                    cluster_size=count + 1,
-                )
+    cluster_ids: list[UUID] = await asyncio.gather(*[
+        _assign(rid, req, resp)
+        for rid, req, resp in zip(response_ids, request_embeddings, response_embeddings)
+    ])
 
     logger.info("batch_clustered", count=len(entries))
+
+    if settings.GOLDEN_SET_MODE != "auto":
+        return
+
+    vector_store = get_vector_store()
+
+    # Count golden set entries for all clusters in parallel
+    counts: list[int] = await asyncio.gather(*[
+        vector_store.count_golden(cluster_id=cid) for cid in cluster_ids
+    ])
+
+    for cluster_id, count, resp_emb, req_emb, response_text in zip(
+        cluster_ids, counts, response_embeddings, request_embeddings, response_texts
+    ):
+        if count < settings.GOLDEN_SET_WARMUP:
+            await vector_store.insert_golden(
+                prompt=response_text,
+                embedding=resp_emb,
+                description="auto",
+                cluster_id=cluster_id,
+                request_embedding=req_emb,
+            )
+            logger.info("golden_set_entry_added", cluster_id=str(cluster_id), cluster_size=count + 1)
 
 
 async def _recover_pending(redis: aioredis.Redis) -> None:

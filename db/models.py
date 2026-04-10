@@ -18,8 +18,9 @@ class Cluster(Base):
     # centroid = LS / N  (derived, not stored)
     # radius   = sqrt(1 - ||LS||² / N²)  (derived, not stored)
     n: Mapped[int] = mapped_column(default=0)
-    ls: Mapped[Vector(384)] = mapped_column(nullable=True)   # linear sum of all embeddings
-    ss: Mapped[float] = mapped_column(default=0.0)           # sum of squared norms; equals N for unit-norm vectors
+    ls: Mapped[Vector(384)] = mapped_column(nullable=True)       # linear sum of all embeddings
+    ss: Mapped[float] = mapped_column(default=0.0)               # sum of squared norms; equals N for unit-norm vectors
+    centroid: Mapped[Vector(384)] = mapped_column(nullable=True) # cached LS/N — kept in sync on every write; drives ANN search
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
 
@@ -36,6 +37,8 @@ class LLMResponse(Base):
     latency_ms: Mapped[int]
     finish_reason: Mapped[str]
     raw_content: Mapped[str]
+    request_text: Mapped[str] = mapped_column(nullable=True)  # original user message; needed for re-enqueue on Redis recovery
+    needs_clustering: Mapped[bool] = mapped_column(default=True)  # False after successful XADD; recovery job targets True rows
     # request_embedding — drives BIRCH clustering (what topic is this question about?)
     request_embedding: Mapped[Vector(384)] = mapped_column(nullable=True)
     # response_embedding — used for quality scoring vs golden set

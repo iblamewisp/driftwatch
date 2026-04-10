@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 
-import requests
+import httpx
 
 from app.schemas.notifications import DriftAlertPayload
 from monitoring.logging import get_logger
@@ -16,7 +16,7 @@ class WebhookNotificationService(AbstractNotificationService):
         self._url = url
         self._secret = secret
 
-    def send_alert(self, payload: DriftAlertPayload) -> None:
+    async def send_alert(self, payload: DriftAlertPayload) -> None:
         body = payload.model_dump_json()
         signature = hmac.new(
             self._secret.encode(),
@@ -24,14 +24,14 @@ class WebhookNotificationService(AbstractNotificationService):
             hashlib.sha256,
         ).hexdigest()
 
-        response = requests.post(
-            self._url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-Driftwatch-Signature": signature,
-            },
-            timeout=10,
-        )
-        response.raise_for_status()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                self._url,
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Driftwatch-Signature": signature,
+                },
+            )
+            response.raise_for_status()
         logger.info("webhook_alert_sent", url=self._url)

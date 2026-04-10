@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import threading
 import time
 
 import redis.asyncio as aioredis
@@ -25,15 +24,15 @@ from services.circuit_breaker import (
 router = APIRouter()
 logger = get_logger("proxy")
 
-_counter_lock = threading.Lock()
 _request_counter = 0
 
 
 def _increment_counter() -> int:
+    # Safe without a lock — asyncio is single-threaded; no two coroutines
+    # execute this simultaneously.
     global _request_counter
-    with _counter_lock:
-        _request_counter += 1
-        return _request_counter
+    _request_counter += 1
+    return _request_counter
 
 
 def _extract_request_text(messages: list) -> str:
@@ -85,6 +84,7 @@ async def _log_and_enqueue(
         latency_ms=latency_ms,
         finish_reason=uniform.finish_reason,
         raw_content=uniform.content,
+        request_text=request_text,
     )
 
     async with AsyncSessionLocal() as session:
@@ -98,12 +98,18 @@ async def _log_and_enqueue(
         latency_ms=latency_ms,
     )
 
+    xadd_ok = False
     try:
         await redis_breaker.call(_xadd(redis, str(response_id), request_text, uniform.content))
+        xadd_ok = True
     except CircuitBreakerOpen:
-        logger.warning("redis_circuit_open_skipping_clustering", request_id=request_id)
+        logger.warning("redis_circuit_open_skipping_clustering", request_id=request_id, response_id=str(response_id))
     except Exception as exc:
-        logger.error("redis_xadd_failed", request_id=request_id, error=str(exc))
+        logger.error("redis_xadd_failed", request_id=request_id, response_id=str(response_id), error=str(exc))
+
+    if xadd_ok:
+        async with AsyncSessionLocal() as session:
+            await response_repo.mark_clustering_enqueued(session, response_id)
 
     counter = _increment_counter()
     if counter % settings.SAMPLING_RATE == 0:

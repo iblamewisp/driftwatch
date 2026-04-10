@@ -6,7 +6,7 @@ from app.schemas.notifications import DriftAlertPayload
 class AbstractNotificationService(ABC):
 
     @abstractmethod
-    def send_alert(self, payload: DriftAlertPayload) -> None:
+    async def send_alert(self, payload: DriftAlertPayload) -> None:
         """Send drift alert. Raise on failure."""
         ...
 

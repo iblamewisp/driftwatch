@@ -1,6 +1,7 @@
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.internal import LoggedResponse
@@ -19,10 +20,41 @@ async def insert_response(session: AsyncSession, data: LoggedResponse) -> UUID:
         latency_ms=data.latency_ms,
         finish_reason=data.finish_reason,
         raw_content=data.raw_content,
+        request_text=data.request_text or None,
+        needs_clustering=True,
     )
     session.add(row)
     await session.commit()
     return response_id
+
+
+async def mark_clustering_enqueued(session: AsyncSession, response_id: UUID) -> None:
+    """Flip needs_clustering=False after a successful XADD to the clustering stream."""
+    await session.execute(
+        update(LLMResponse)
+        .where(LLMResponse.id == response_id)
+        .values(needs_clustering=False)
+    )
+    await session.commit()
+
+
+async def get_unclustered_responses(
+    session: AsyncSession,
+    older_than_seconds: int = 300,
+    limit: int = 100,
+) -> list[LLMResponse]:
+    """
+    Return rows that never made it into the clustering stream.
+    The age guard prevents racing with in-flight XADD calls.
+    """
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(seconds=older_than_seconds)
+    result = await session.execute(
+        select(LLMResponse)
+        .where(LLMResponse.needs_clustering == True)  # noqa: E712 — SQLAlchemy requires ==
+        .where(LLMResponse.created_at < cutoff)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
 
 
 async def get_response_by_id(session: AsyncSession, response_id: UUID) -> LLMResponse:

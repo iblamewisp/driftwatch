@@ -22,6 +22,7 @@ class LoggedResponse(BaseModel):
     latency_ms: int
     finish_reason: str
     raw_content: str
+    request_text: str = ""  # original user message — stored for Redis recovery
 
 
 class EvaluationResult(BaseModel):

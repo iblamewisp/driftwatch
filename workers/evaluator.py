@@ -1,21 +1,11 @@
 from uuid import UUID
 
-import numpy as np
-
 from monitoring.logging import get_logger
 from monitoring.metrics import QUALITY_SCORE_GAUGE
+from services.embedding.similarity import mean_cosine_similarity
 from workers.celery_app import celery_app, get_worker_loop
 
 logger = get_logger("evaluator")
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    va = np.array(a, dtype=np.float32)
-    vb = np.array(b, dtype=np.float32)
-    denom = np.linalg.norm(va) * np.linalg.norm(vb)
-    if denom == 0:
-        return 0.0
-    return float(np.dot(va, vb) / denom)
 
 
 async def _evaluate_response(task, response_id_str: str) -> None:
@@ -54,8 +44,7 @@ async def _evaluate_response(task, response_id_str: str) -> None:
         )
         return
 
-    similarities = [_cosine_similarity(embedding, g) for g in golden_embeddings]
-    quality_score = float(np.mean(similarities))
+    quality_score = mean_cosine_similarity(embedding, golden_embeddings)
 
     result = EvaluationResult(
         response_id=response_id,

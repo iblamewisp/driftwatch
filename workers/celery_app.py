@@ -33,6 +33,10 @@ celery_app.conf.beat_schedule = {
         "task": "workers.detection.run_cluster_split",
         "schedule": 3600.0,
     },
+    "recover-unclustered-every-5-minutes": {
+        "task": "workers.detection.recover_unclustered_responses",
+        "schedule": 300.0,
+    },
 }
 
 celery_app.conf.task_routes = {

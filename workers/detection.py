@@ -88,7 +88,7 @@ async def _detect_for_cluster(cluster_id: UUID) -> None:
     alert_sent = False
     if service:
         try:
-            service.send_alert(payload)
+            await service.send_alert(payload)
             alert_sent = True
             DRIFT_ALERT_COUNTER.inc()
         except Exception as exc:
@@ -136,3 +136,57 @@ async def _run_cluster_split() -> None:
 @celery_app.task(name="workers.detection.run_cluster_split")
 def run_cluster_split() -> None:
     get_worker_loop().run_until_complete(_run_cluster_split())
+
+
+async def _recover_unclustered_responses() -> None:
+    """
+    Re-enqueue llm_responses rows that never made it into the clustering stream
+    (XADD failed while Redis was down). Targets needs_clustering=True rows older
+    than 5 minutes to avoid racing with in-flight XADD calls from the proxy.
+    """
+    import redis.asyncio as aioredis
+
+    from app.config import settings
+    from db.repositories import response_repo
+    from db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        rows = await response_repo.get_unclustered_responses(session, older_than_seconds=300)
+
+    if not rows:
+        return
+
+    redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    recovered = 0
+
+    for row in rows:
+        if not row.request_text:
+            # Pre-migration row — no request_text stored, cannot reconstruct stream entry.
+            # Mark done to stop the recovery job from retrying it forever.
+            async with AsyncSessionLocal() as session:
+                await response_repo.mark_clustering_enqueued(session, row.id)
+            logger.warning("recovery_skipped_no_request_text", response_id=str(row.id))
+            continue
+
+        try:
+            await redis.xadd(
+                "driftwatch:clustering",
+                {
+                    "response_id": str(row.id),
+                    "request_text": row.request_text,
+                    "response_text": row.raw_content,
+                },
+            )
+            async with AsyncSessionLocal() as session:
+                await response_repo.mark_clustering_enqueued(session, row.id)
+            recovered += 1
+        except Exception as exc:
+            logger.error("recovery_xadd_failed", response_id=str(row.id), error=str(exc))
+
+    if recovered:
+        logger.info("unclustered_responses_recovered", count=recovered)
+
+
+@celery_app.task(name="workers.detection.recover_unclustered_responses")
+def recover_unclustered_responses() -> None:
+    get_worker_loop().run_until_complete(_recover_unclustered_responses())
