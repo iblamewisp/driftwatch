@@ -11,32 +11,27 @@ Driftwatch sits between your app and the upstream LLM API. Every request passes 
 ```
 Your App  →  Driftwatch Proxy  →  OpenAI / Anthropic
                     │
-                    ├─ INSERT llm_responses (request_text + needs_clustering flag)
-                    ├─ XADD driftwatch:clustering  (fire-and-forget)
-                    └─ enqueue evaluator (every Nth request, sampling)
+                    ├─ INSERT llm_responses (needs_clustering=True, request_text)
+                    ├─ XADD driftwatch:clustering
+                    └─ every Nth: SET needs_evaluation=True  (flag only, no task yet)
                               │
-                    ┌─────────┴─────────┐
-                    ▼                   ▼
-          Clustering Service     Evaluator (Celery)
-          (Redis Stream loop)
+                              ▼
+                    Clustering Service (Redis Stream)
+                      interleaved batch embed → LitServe
+                      BIRCH assign_cluster (HNSW ANN + advisory lock)
+                      if needs_evaluation=True → enqueue Evaluator
+                              │
+                    ┌─────────┴──────────────┐
+                    ▼                        ▼
+           PostgreSQL + pgvector      Evaluator (Celery)
+           llm_responses              cluster_id guaranteed set
+           clusters / golden_set      cosine sim vs golden set
+           drift_events               → quality_score
                     │
                     ▼
-          BIRCH assign_cluster
-            HNSW ANN top-10
-            absorption check
-            advisory lock on create
-                    │
-                    ▼
-           PostgreSQL + pgvector
-           llm_responses / clusters
-           golden_set / drift_events
-                    │
-                    ▼
-          Drift Detection (Celery beat)
-          per cluster, every 10 min
-          baseline = oldest 50% of scores
-          current  = newest 50% of scores
-          delta > DRIFT_THRESHOLD → alert
+          Drift Detection (Celery beat, every 10 min)
+          per cluster: baseline vs current quality scores
+          delta > DRIFT_THRESHOLD → DriftEvent → Notification
 ```
 
 ---
@@ -298,58 +293,60 @@ Metrics exposed at `/metrics` (Prometheus format):
 │                        │                          │
 │             return response to client             │
 │                        │                          │
-│           fire-and-forget (asyncio.create_task)   │
-│             INSERT llm_responses                  │
-│               needs_clustering=True               │
-│               request_text stored                 │
-│             XADD driftwatch:clustering            │
-│             enqueue evaluator (every Nth)         │
+│  fire-and-forget (asyncio.create_task)            │
+│    INSERT llm_responses                           │
+│      needs_clustering=True                        │
+│      request_text stored                          │
+│    XADD driftwatch:clustering                     │
+│    every Nth: SET needs_evaluation=True           │
 └──────────────────────────────────────────────────┘
-          │                          │
-          ▼                          ▼
- ┌─────────────────┐       ┌──────────────────────┐
- │ Clustering Svc  │       │   Evaluator (Celery)  │
- │ (Redis Stream)  │       │                       │
- │                 │       │  use stored embedding │
- │ interleaved     │       │  (re-embed legacy     │
- │ batch embed     │       │  rows as fallback)    │
- │                 │       │                       │
- │ BIRCH on        │       │  matrix cosine sim    │
- │ request embeds  │       │  vs golden set        │
- │ HNSW ANN top-K  │       │  → quality_score      │
- │ advisory lock   │       └──────────────────────┘
- │ on cluster      │                 │
- │ create          │                 ▼
- │ → cluster_id    │       ┌──────────────────────┐
- │ → golden set    │       │     PostgreSQL        │
- │   (auto mode)   │       │     + pgvector        │
- └─────────────────┘       │                       │
-          │                │  llm_responses        │
-          └───────────────►│  golden_set           │
-                           │  clusters             │
-                           │  drift_events         │
-                           └──────────────────────┘
-                                     │
-                           ┌─────────▼────────────┐
-                           │  Detection (Celery    │
-                           │  beat, every 10 min)  │
-                           │                       │
-                           │  per cluster:         │
-                           │  baseline = oldest 50%│
-                           │  current  = newest 50%│
-                           │  delta > threshold    │
-                           │    → DriftEvent       │
-                           │    → Notification     │
-                           └──────────────────────┘
-                                     │
-                           ┌─────────▼────────────┐
-                           │  Split (Celery beat,  │
-                           │  every 1 hour)        │
-                           │                       │
-                           │  kmeans_split_cluster │
-                           │  PL/pgSQL — k-means   │
-                           │  runs inside Postgres │
-                           └──────────────────────┘
+                    │
+                    ▼
+          ┌─────────────────────────┐
+          │    Clustering Service   │
+          │    (Redis Stream loop)  │
+          │                         │
+          │  interleaved batch      │
+          │  embed → LitServe       │
+          │                         │
+          │  BIRCH assign_cluster   │
+          │  HNSW ANN top-K         │
+          │  advisory lock on       │
+          │  cluster create         │
+          │                         │
+          │  needs_evaluation=True? │
+          │  → enqueue Evaluator    │
+          │  → flip flag False      │
+          │                         │
+          │  auto golden set insert │
+          └─────────┬───────────────┘
+                    │                      ┌──────────────────────┐
+                    │        ┌────────────►│   Evaluator (Celery)  │
+                    │        │             │                       │
+                    ▼        │             │  cluster_id is set    │
+          ┌──────────────────┴───┐         │  use stored embedding │
+          │     PostgreSQL        │         │  (re-embed legacy    │
+          │     + pgvector        │         │   rows as fallback)  │
+          │                       │         │                       │
+          │  llm_responses        │         │  cosine sim vs        │
+          │  golden_set           │◄────────│  golden set           │
+          │  clusters             │         │  → quality_score      │
+          │  drift_events         │         └──────────────────────┘
+          └──────────┬────────────┘
+                     │
+           ┌─────────┴────────────┐
+           │                      │
+           ▼                      ▼
+ ┌──────────────────┐   ┌──────────────────────┐
+ │ Detection        │   │ Split                │
+ │ (beat, 10 min)   │   │ (beat, 1 hour)       │
+ │                  │   │                      │
+ │ per cluster:     │   │ kmeans_split_cluster │
+ │ baseline vs      │   │ PL/pgSQL — runs      │
+ │ current scores   │   │ inside Postgres      │
+ │ → DriftEvent     │   └──────────────────────┘
+ │ → Notification   │
+ └──────────────────┘
 ```
 
 ---
