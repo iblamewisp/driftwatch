@@ -42,7 +42,7 @@ Your App  →  Driftwatch Proxy  →  OpenAI / Anthropic
 
 ```bash
 # 1. Clone
-git clone https://github.com/yourname/driftwatch && cd driftwatch
+git clone https://github.com/iblamewisp/driftwatch && cd driftwatch
 
 # 2. Configure
 cp .env.example .env
