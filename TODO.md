@@ -36,9 +36,10 @@ Guarded by `pg_advisory_xact_lock(AdvisoryLock.CLUSTER_CREATION)` via `db/locks.
 Workers contending on the "no absorbing cluster" branch serialize, re-query ANN under
 the lock, and absorb into any cluster created while waiting.
 
-### [RESOLVED] `threading.Lock` in async proxy counter
-Removed. `asyncio` is single-threaded — the lock was unnecessary. Counter increment
-is now a plain global mutation.
+### [RESOLVED] Sampling counter was process-local — blocked horizontal scaling
+Replaced in-memory global with `redis.incr("driftwatch:sampling_counter")`. Atomic,
+shared across all proxy replicas. If Redis is unreachable the request is skipped for
+evaluation with a warning — not a hard failure.
 
 ---
 
@@ -57,18 +58,16 @@ Advisory lock serializes only the rare "create cluster" branch on the DB side.
 Replaced per-row UPDATEs with a single bulk `UPDATE ... CASE WHEN` statement.
 
 ### [PERF] ANN candidate limit K=10 may miss the true best absorbing cluster
-**File:** `db/repositories/cluster_repo.py — assign_cluster`
+**File:** `db/repositories/cluster_postgres.py — assign_cluster`
 **Issue:** HNSW returns top-10 by centroid cosine distance. If `BIRCH_THRESHOLD` is tight
 and clusters are dense, the correct absorbing cluster could rank 11th. System would then
 create a new cluster unnecessarily.
 **Fix:** Tune K upward (20–50) or monitor `cluster_created` log rate — a spike means K is
 too small or `BIRCH_THRESHOLD` too tight.
 
-### [PERF] GoldenSet reassignment in `split_oversized_clusters` is still N+1
-**File:** `db/repositories/cluster_repo.py`
-**Issue:** Golden set entries reassigned one UPDATE per row. Low priority — golden set is
-small and user-managed. Documented here for completeness.
-**Fix:** Bulk `UPDATE ... CASE WHEN` same as LLMResponse fix.
+### [RESOLVED] GoldenSet reassignment in `split_oversized_clusters` was N+1
+Replaced per-row UPDATE loop with a single bulk `UPDATE golden_set ... CASE WHEN` statement.
+Both response and golden set reassignment now complete in one round-trip each.
 
 ### [PERF] `updated_at` on Cluster is never updated on writes
 **File:** `db/models.py`

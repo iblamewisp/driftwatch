@@ -15,14 +15,7 @@ from services.circuit_breaker import CircuitBreakerOpen, redis_breaker
 
 logger = get_logger("pipeline")
 
-_request_counter = 0
-
-
-def _increment_counter() -> int:
-    # Safe without a lock — asyncio is single-threaded.
-    global _request_counter
-    _request_counter += 1
-    return _request_counter
+_SAMPLING_COUNTER_KEY = "driftwatch:sampling_counter"
 
 
 async def log_and_enqueue(
@@ -70,6 +63,11 @@ async def log_and_enqueue(
         async with AsyncSessionLocal() as session:
             await response_repo.mark_clustering_enqueued(session, response_id)
 
-    if _increment_counter() % settings.SAMPLING_RATE == 0:
-        from workers.evaluator import evaluate_response
-        evaluate_response.delay(str(response_id))
+    try:
+        count = await redis.incr(_SAMPLING_COUNTER_KEY)
+        if count % settings.SAMPLING_RATE == 0:
+            from workers.evaluator import evaluate_response
+            evaluate_response.delay(str(response_id))
+    except Exception as exc:
+        logger.warning("sampling_counter_failed_skipping_evaluation",
+                       request_id=request_id, error=str(exc))
