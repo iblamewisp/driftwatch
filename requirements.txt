@@ -14,20 +14,12 @@ pgvector>=0.2
 celery>=5.3
 redis>=5.0
 
-# ML
-sentence-transformers>=2.7
-torch>=2.2
+# ML (numpy only — embeddings run in the separate litserve container)
 numpy>=1.26
 
 # Config & validation
 pydantic>=2.6
 pydantic-settings>=2.2
-
-# Notifications
-requests>=2.31
-
-# Embedding service
-litserve>=0.2
 
 # Observability
 structlog>=24.1

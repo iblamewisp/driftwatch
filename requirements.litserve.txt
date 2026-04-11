@@ -1,0 +1,4 @@
+litserve>=0.2
+sentence-transformers>=2.7
+torch>=2.2
+numpy>=1.26
