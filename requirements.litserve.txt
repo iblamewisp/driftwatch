@@ -1,4 +1,5 @@
 litserve>=0.2
 sentence-transformers>=2.7
 torch>=2.2
-numpy>=1.26
+# <2.0 pin: NumPy 2.0 is an ABI break; sentence-transformers 5.x requires Python >=3.10
+numpy>=1.26,<2.0

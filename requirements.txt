@@ -15,7 +15,8 @@ celery>=5.3
 redis>=5.0
 
 # ML (numpy only — embeddings run in the separate litserve container)
-numpy>=1.26
+# <2.0 pin: NumPy 2.0 is an ABI break; remove once torch/sentence-transformers confirm 2.x support
+numpy>=1.26,<2.0
 
 # Config & validation
 pydantic>=2.6

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
@@ -21,8 +21,8 @@ class Cluster(Base):
     ls: Mapped[Vector(384)] = mapped_column(nullable=True)       # linear sum of all embeddings
     ss: Mapped[float] = mapped_column(default=0.0)               # sum of squared norms; equals N for unit-norm vectors
     centroid: Mapped[Vector(384)] = mapped_column(nullable=True) # cached LS/N — kept in sync on every write; drives ANN search
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
     # updated_at is kept current by the clusters_set_updated_at trigger (migration 0009).
     # onupdate= is not used because all cluster writes go through SQLAlchemy Core UPDATE
     # statements, which bypass ORM-level column events.
@@ -48,7 +48,7 @@ class LLMResponse(Base):
     response_embedding: Mapped[Vector(384)] = mapped_column(nullable=True)
     quality_score: Mapped[float] = mapped_column(nullable=True)
     cluster_id: Mapped[UUID] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
 
 
 class GoldenSet(Base):
@@ -60,14 +60,14 @@ class GoldenSet(Base):
     request_embedding: Mapped[Vector(384)] = mapped_column(nullable=True)  # for cluster reassignment on split
     description: Mapped[str]
     cluster_id: Mapped[UUID] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
 
 
 class DriftEvent(Base):
     __tablename__ = "drift_events"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    detected_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    detected_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc), server_default=func.now())
     cluster_id: Mapped[UUID] = mapped_column(nullable=True)
     similarity_score: Mapped[float]
     baseline_score: Mapped[float]
