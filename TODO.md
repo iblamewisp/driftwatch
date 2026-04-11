@@ -23,13 +23,10 @@ flip the flag. Or wrap send + update in a single transaction with a savepoint.
 
 ## Thread Safety
 
-### [THREAD-UNSAFE] `get_worker_loop()` uses unprotected global state
-**File:** `workers/celery_app.py:8-17`
-**Issue:** `_worker_loop` is a module-level global mutated without a lock. Safe with Celery's
-default `prefork` pool (one OS process per worker, one thread per process). Breaks silently
-with `-P threads`, `-P gevent`, or `-P eventlet`.
-**Fix:** Add a `threading.Lock` guard or use `threading.local()`. Or enforce prefork in
-deployment config and document the constraint.
+### [RESOLVED] `get_worker_loop()` uses unprotected global state
+Replaced module-level global with `threading.local()`. Each thread now owns its
+event loop — safe under `-P threads`. Prefork behaviour is unchanged (one thread
+per process). `-P gevent` / `-P eventlet` remain unsupported.
 
 ### [RESOLVED] `assign_cluster` create-on-miss race
 Guarded by `pg_advisory_xact_lock(AdvisoryLock.CLUSTER_CREATION)` via `db/locks.py`.

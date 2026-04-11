@@ -1,23 +1,28 @@
 import asyncio
 import functools
+import threading
 
 from celery import Celery
 
 from app.config import settings
 
 # ── Event loop ────────────────────────────────────────────────────────────────
-# One loop per worker process, created on first use, reused for its lifetime.
-# IMPORTANT: requires Celery prefork pool (the default, -P prefork).
-# Breaks with -P threads / -P gevent / -P eventlet — do not switch pool type.
-_worker_loop: asyncio.AbstractEventLoop | None = None
+# One loop per thread, created on first use, reused for its lifetime.
+# threading.local() makes this safe under -P threads (each thread owns its loop).
+# With the default prefork pool there is one thread per worker process, so
+# behaviour is identical to a plain global.
+# Note: -P gevent and -P eventlet are still unsupported — run_until_complete is
+# incompatible with cooperative multitasking schedulers regardless of this fix.
+_thread_local = threading.local()
 
 
 def _get_worker_loop() -> asyncio.AbstractEventLoop:
-    global _worker_loop
-    if _worker_loop is None or _worker_loop.is_closed():
-        _worker_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_worker_loop)
-    return _worker_loop
+    loop: asyncio.AbstractEventLoop | None = getattr(_thread_local, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _thread_local.loop = loop
+    return loop
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
