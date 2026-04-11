@@ -33,9 +33,6 @@ dependencies = [
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
 
-    # Notifications
-    "requests>=2.31",
-
     # Observability
     "structlog>=24.1",
     "prometheus-client>=0.20",

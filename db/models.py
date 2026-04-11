@@ -23,6 +23,9 @@ class Cluster(Base):
     centroid: Mapped[Vector(384)] = mapped_column(nullable=True) # cached LS/N — kept in sync on every write; drives ANN search
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, server_default=func.now())
+    # updated_at is kept current by the clusters_set_updated_at trigger (migration 0009).
+    # onupdate= is not used because all cluster writes go through SQLAlchemy Core UPDATE
+    # statements, which bypass ORM-level column events.
 
 
 class LLMResponse(Base):

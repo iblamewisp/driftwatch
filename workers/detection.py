@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -115,8 +116,7 @@ async def run_drift_detection() -> None:
         logger.info("no_clusters_yet_skipping_drift_detection")
         return
 
-    for cluster_id in cluster_ids:
-        await _detect_for_cluster(cluster_id)
+    await asyncio.gather(*[_detect_for_cluster(cid) for cid in cluster_ids])
 
 
 @async_task(name="workers.detection.run_cluster_split")

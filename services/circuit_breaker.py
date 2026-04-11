@@ -111,9 +111,6 @@ _provider_breakers: dict[str, CircuitBreaker] = {
     "anthropic": CircuitBreaker(name="anthropic", fail_max=3, reset_timeout=60.0),
 }
 
-# Legacy alias kept for streaming path that references openai_breaker directly
-openai_breaker = _provider_breakers["openai"]
-
 redis_breaker = CircuitBreaker(
     name="redis",
     fail_max=5,

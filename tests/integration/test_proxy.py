@@ -4,7 +4,7 @@ Integration tests for proxy endpoints.
 Strategy:
   - Run the full ASGI stack (middleware → router → provider)
   - Mock upstream HTTP with respx (intercepts httpx at transport level)
-  - Mock _log_and_enqueue with AsyncMock — it's a background task and
+  - Mock log_and_enqueue in app.forwarding — it's a background task that
     requires live DB/Redis which we don't have in CI
   - Auth middleware is exercised for real
 
@@ -79,8 +79,7 @@ class TestChatCompletionsOpenAI:
             return_value=httpx.Response(200, json=OPENAI_RESPONSE)
         )
 
-        with patch("app.proxy._log_and_enqueue", new=AsyncMock()), \
-             patch("app.proxy.asyncio.create_task"):
+        with patch("app.forwarding.log_and_enqueue", new=AsyncMock()):
             resp = await async_client.post(
                 "/v1/chat/completions",
                 json={"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]},
@@ -98,7 +97,7 @@ class TestChatCompletionsOpenAI:
             return_value=httpx.Response(400, json={"error": {"message": "bad request"}})
         )
 
-        with patch("app.proxy.asyncio.create_task"):
+        with patch("app.forwarding.log_and_enqueue", new=AsyncMock()):
             resp = await async_client.post(
                 "/v1/chat/completions",
                 json={"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]},
@@ -143,8 +142,7 @@ class TestChatCompletionsClaude:
             return_value=httpx.Response(200, json=ANTHROPIC_RESPONSE)
         )
 
-        with patch("app.proxy._log_and_enqueue", new=AsyncMock()), \
-             patch("app.proxy.asyncio.create_task"):
+        with patch("app.forwarding.log_and_enqueue", new=AsyncMock()):
             resp = await async_client.post(
                 "/v1/chat/completions",
                 json={
@@ -168,8 +166,7 @@ class TestChatCompletionsClaude:
 
         respx.post("https://api.anthropic.com/v1/messages").mock(side_effect=capture)
 
-        with patch("app.proxy._log_and_enqueue", new=AsyncMock()), \
-             patch("app.proxy.asyncio.create_task"):
+        with patch("app.forwarding.log_and_enqueue", new=AsyncMock()):
             await async_client.post(
                 "/v1/chat/completions",
                 json={
@@ -197,8 +194,7 @@ class TestMessagesEndpoint:
             return_value=httpx.Response(200, json=ANTHROPIC_RESPONSE)
         )
 
-        with patch("app.proxy._log_and_enqueue", new=AsyncMock()), \
-             patch("app.proxy.asyncio.create_task"):
+        with patch("app.forwarding.log_and_enqueue", new=AsyncMock()):
             resp = await async_client.post(
                 "/v1/messages",
                 json={
