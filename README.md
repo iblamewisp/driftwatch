@@ -38,28 +38,53 @@ Your App  →  Driftwatch Proxy  →  OpenAI / Anthropic
 
 ## Quick Start
 
-**Prerequisites:** Docker, Docker Compose
+**Prerequisites:** Docker, Docker Compose, Python 3.11+
 
 ```bash
 # 1. Clone
 git clone https://github.com/iblamewisp/driftwatch && cd driftwatch
 
-# 2. Configure
+# 2. Copy and edit the config
 cp .env.example .env
+```
 
-# 3. Generate an API key — paste the hash into .env as DRIFTWATCH_KEY_HASH
-docker-compose -f docker/docker-compose.yml run --rm proxy python -m cli generate-key
+Open `.env` and fill in at minimum:
+
+```env
+DRIFTWATCH_KEY_HASH=        # see step 3
+DATABASE_URL=postgresql+asyncpg://driftwatch:driftwatch@postgres:5432/driftwatch
+REDIS_URL=redis://redis:6379/0
+
+# Add whichever upstream you use:
+# OPENAI_API_KEY is NOT stored here — pass it per-request in Authorization: Bearer sk-...
+# ANTHROPIC_API_KEY is NOT stored here either — same pattern
+```
+
+```bash
+# 3. Generate an API key (pure local — no services needed)
+python3 -m cli generate-key
+# Output:
+#   Your API key:  dwk_<...>        ← keep this, pass in X-DriftWatch-Key header
+#   Add to .env:   DRIFTWATCH_KEY_HASH=<...>  ← paste into .env
 
 # 4. Start
 docker-compose -f docker/docker-compose.yml up -d
 
-# 5. Point your client at the proxy
+# First run pulls images and builds containers — takes a few minutes.
+# The proxy waits for postgres, redis, and litserve to be healthy before starting.
+# Database schema is created automatically via `alembic upgrade head`.
+
+# 5. Verify
+curl http://localhost:8000/healthz
+# {"status": "ok"}
+
+# 6. Point your client at the proxy
 #    Replace:  base_url="https://api.openai.com"
 #    With:     base_url="http://localhost:8000"
-#    Add header: X-DriftWatch-Key: dwk_<your key>
+#    Add:      X-DriftWatch-Key: dwk_<your key>
 ```
 
-Your OpenAI API key travels in `Authorization: Bearer sk-...` as normal — Driftwatch forwards it and never touches it.
+Your API key (`Authorization: Bearer sk-...`) is forwarded to the upstream as-is — Driftwatch never logs or stores it.
 
 ### Anthropic
 
