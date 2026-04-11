@@ -66,8 +66,8 @@ async def log_and_enqueue(
     try:
         count = await redis.incr(_SAMPLING_COUNTER_KEY)
         if count % settings.SAMPLING_RATE == 0:
-            from workers.evaluator import evaluate_response
-            evaluate_response.delay(str(response_id))
+            async with AsyncSessionLocal() as session:
+                await response_repo.mark_needs_evaluation(session, response_id)
     except Exception as exc:
         logger.warning("sampling_counter_failed_skipping_evaluation",
                        request_id=request_id, error=str(exc))

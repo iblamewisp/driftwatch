@@ -57,6 +57,38 @@ async def get_unclustered_responses(
     return list(result.scalars().all())
 
 
+async def mark_needs_evaluation(session: AsyncSession, response_id: UUID) -> None:
+    """Flag a response for evaluation. Clustering service will enqueue the task after assign_cluster."""
+    await session.execute(
+        update(LLMResponse)
+        .where(LLMResponse.id == response_id)
+        .values(needs_evaluation=True)
+    )
+    await session.commit()
+
+
+async def get_flagged_for_evaluation(
+    session: AsyncSession, response_ids: list[UUID]
+) -> list[UUID]:
+    """Return subset of response_ids where needs_evaluation=True."""
+    result = await session.execute(
+        select(LLMResponse.id)
+        .where(LLMResponse.id.in_(response_ids))
+        .where(LLMResponse.needs_evaluation == True)  # noqa: E712
+    )
+    return list(result.scalars().all())
+
+
+async def clear_needs_evaluation(session: AsyncSession, response_ids: list[UUID]) -> None:
+    """Flip needs_evaluation=False after enqueuing the evaluator task."""
+    await session.execute(
+        update(LLMResponse)
+        .where(LLMResponse.id.in_(response_ids))
+        .values(needs_evaluation=False)
+    )
+    await session.commit()
+
+
 async def get_response_by_id(session: AsyncSession, response_id: UUID) -> LLMResponse:
     result = await session.execute(
         select(LLMResponse).where(LLMResponse.id == response_id)

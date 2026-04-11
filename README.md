@@ -79,7 +79,7 @@ The proxy also accepts Anthropic-native requests at `/v1/messages`. Point `base_
 ```
 app/proxy.py          — FastAPI router, two endpoints (/v1/chat/completions, /v1/messages)
 app/forwarding.py     — forward_unary() / forward_streaming() — httpx to upstream
-app/pipeline.py       — log_and_enqueue(): INSERT + XADD + optional Celery enqueue
+app/pipeline.py       — log_and_enqueue(): INSERT + XADD + needs_evaluation flag
 app/utils.py          — extract_request_text(), forwarded_headers()
 ```
 
@@ -89,7 +89,7 @@ Request path:
 3. Response returned to client immediately
 4. `asyncio.create_task(log_and_enqueue(...))` fires in the background — never on the hot path
 5. Inside `log_and_enqueue`: INSERT `llm_responses` with `needs_clustering=True` and `request_text`; then XADD to Redis stream. If XADD fails (Redis down), the row stays with `needs_clustering=True` and the recovery task picks it up later.
-6. Every `SAMPLING_RATE`-th request enqueues an `evaluate_response` Celery task
+6. Every `SAMPLING_RATE`-th request sets `needs_evaluation=True` on the row — the evaluator is **not** enqueued here
 
 ### 2. Clustering service (`services/clustering/service.py`)
 
@@ -98,7 +98,8 @@ Runs as a standalone asyncio process (not Celery). Reads from `driftwatch:cluste
 1. On startup: recover any pending messages left in PEL from a previous crash, dropping poison pills (delivery count ≥ `CLUSTERING_MAX_DELIVERY_ATTEMPTS`)
 2. Main loop: `XREADGROUP` blocks up to `CLUSTERING_MAX_WAIT_MS`, flushes when buffer reaches `CLUSTERING_MAX_BATCH` pairs or timeout fires
 3. Per batch: interleaved embed `[req1, resp1, req2, resp2, ...]` → one LitServe call → split by stride → `asyncio.gather` over all `assign_cluster` calls in parallel
-4. Auto golden set: if `GOLDEN_SET_MODE=auto` and cluster size < `GOLDEN_SET_WARMUP`, insert response embedding into `golden_set`
+4. After clustering: check which response_ids in the batch have `needs_evaluation=True` — enqueue `evaluate_response` Celery task for each, then flip the flag to False. Evaluator is guaranteed to start only after `cluster_id` and `response_embedding` are written.
+5. Auto golden set: if `GOLDEN_SET_MODE=auto` and cluster size < `GOLDEN_SET_WARMUP`, insert response embedding into `golden_set`
 
 ### 3. Clustering logic (`db/repositories/cluster_postgres.py`, `services/clustering/birch.py`)
 

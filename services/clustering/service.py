@@ -72,6 +72,22 @@ async def _process_batch(entries: list[dict]) -> None:
 
     logger.info("batch_clustered", count=len(entries))
 
+    # Enqueue evaluation for responses flagged by the proxy sampling counter.
+    # Done here — after assign_cluster — so cluster_id and response_embedding
+    # are guaranteed written before the evaluator task reads the row.
+    from db.repositories import response_repo
+    from workers.evaluator import evaluate_response
+
+    async with AsyncSessionLocal() as session:
+        flagged = await response_repo.get_flagged_for_evaluation(session, response_ids)
+
+    for response_id in flagged:
+        evaluate_response.delay(str(response_id))
+
+    if flagged:
+        async with AsyncSessionLocal() as session:
+            await response_repo.clear_needs_evaluation(session, flagged)
+
     if settings.GOLDEN_SET_MODE != "auto":
         return
 

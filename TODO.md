@@ -93,6 +93,22 @@ stayed NULL permanently with no recovery path.
 
 ---
 
+## Evaluation ordering
+
+### [RESOLVED] Evaluator could start before clustering finished
+Evaluator was enqueued by the proxy at the same time as XADD — before `cluster_id`
+and `response_embedding` were written. With default settings (5 retries × 10s) any
+clustering delay over 50 seconds would silently drop the evaluation permanently.
+
+**Fix applied:**
+- Proxy sets `needs_evaluation=True` flag instead of enqueuing directly
+- Clustering service reads the flag after `assign_cluster` completes, enqueues
+  `evaluate_response`, then clears the flag — guaranteeing cluster_id is present
+- Migration `0008` adds `needs_evaluation` column with partial index
+- Evaluator no longer retries on `cluster_id is None` — logs error and returns instead
+
+---
+
 ## Observability
 
 ### [OBS] Detection worker silently skips clusters on insufficient data

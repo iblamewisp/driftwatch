@@ -33,7 +33,10 @@ async def evaluate_response(self, response_id: str) -> None:
         raw_content = response.raw_content
 
     if cluster_id is None:
-        raise self.retry(countdown=settings.EVALUATOR_RETRY_COUNTDOWN)
+        # Should not happen — evaluator is enqueued by clustering service after
+        # assign_cluster writes cluster_id. Log and bail rather than retrying blind.
+        logger.error("evaluator_started_without_cluster_id", response_id=response_id)
+        return
 
     if stored_embedding is not None:
         embedding = stored_embedding
