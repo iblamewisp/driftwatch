@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 
 from monitoring.logging import get_logger
 from monitoring.metrics import DRIFT_ALERT_COUNTER
-from workers.celery_app import celery_app, get_worker_loop
+from workers.celery_app import async_task
 
 logger = get_logger("detection")
 
@@ -103,12 +103,13 @@ async def _detect_for_cluster(cluster_id: UUID) -> None:
         await session.commit()
 
 
-async def _run_drift_detection() -> None:
-    from db.repositories.cluster_repo import get_all_cluster_ids
+@async_task(name="workers.detection.run_drift_detection")
+async def run_drift_detection() -> None:
     from db.session import AsyncSessionLocal
+    from db.vector_store import get_cluster_repository
 
     async with AsyncSessionLocal() as session:
-        cluster_ids = await get_all_cluster_ids(session)
+        cluster_ids = await get_cluster_repository().get_all_cluster_ids(session)
 
     if not cluster_ids:
         logger.info("no_clusters_yet_skipping_drift_detection")
@@ -118,31 +119,23 @@ async def _run_drift_detection() -> None:
         await _detect_for_cluster(cluster_id)
 
 
-@celery_app.task(name="workers.detection.run_drift_detection")
-def run_drift_detection() -> None:
-    get_worker_loop().run_until_complete(_run_drift_detection())
-
-
-async def _run_cluster_split() -> None:
-    from db.repositories.cluster_repo import split_oversized_clusters
+@async_task(name="workers.detection.run_cluster_split")
+async def run_cluster_split() -> None:
     from db.session import AsyncSessionLocal
+    from db.vector_store import get_cluster_repository
 
     async with AsyncSessionLocal() as session:
-        splits = await split_oversized_clusters(session)
+        splits = await get_cluster_repository().split_oversized_clusters(session)
 
     logger.info("cluster_split_check_complete", splits_performed=splits)
 
 
-@celery_app.task(name="workers.detection.run_cluster_split")
-def run_cluster_split() -> None:
-    get_worker_loop().run_until_complete(_run_cluster_split())
-
-
-async def _recover_unclustered_responses() -> None:
+@async_task(name="workers.detection.recover_unclustered_responses")
+async def recover_unclustered_responses() -> None:
     """
     Re-enqueue llm_responses rows that never made it into the clustering stream
     (XADD failed while Redis was down). Targets needs_clustering=True rows older
-    than 5 minutes to avoid racing with in-flight XADD calls from the proxy.
+    than RECOVERY_MIN_AGE_SECONDS to avoid racing with in-flight XADD calls from the proxy.
     """
     import redis.asyncio as aioredis
 
@@ -151,7 +144,9 @@ async def _recover_unclustered_responses() -> None:
     from db.session import AsyncSessionLocal
 
     async with AsyncSessionLocal() as session:
-        rows = await response_repo.get_unclustered_responses(session, older_than_seconds=300)
+        rows = await response_repo.get_unclustered_responses(
+            session, older_than_seconds=settings.RECOVERY_MIN_AGE_SECONDS
+        )
 
     if not rows:
         return
@@ -170,7 +165,7 @@ async def _recover_unclustered_responses() -> None:
 
         try:
             await redis.xadd(
-                "driftwatch:clustering",
+                settings.CLUSTERING_STREAM_KEY,
                 {
                     "response_id": str(row.id),
                     "request_text": row.request_text,
@@ -185,8 +180,3 @@ async def _recover_unclustered_responses() -> None:
 
     if recovered:
         logger.info("unclustered_responses_recovered", count=recovered)
-
-
-@celery_app.task(name="workers.detection.recover_unclustered_responses")
-def recover_unclustered_responses() -> None:
-    get_worker_loop().run_until_complete(_recover_unclustered_responses())

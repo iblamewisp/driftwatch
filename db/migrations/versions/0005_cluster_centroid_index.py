@@ -8,7 +8,7 @@ can run an approximate nearest-neighbour search (HNSW, cosine distance) without
 pulling the full cluster table into Python on every incoming request.
 
 Invariant: centroid must be kept in sync with ls/n on every write.
-See db/repositories/cluster_repo.py — assign_cluster and split_oversized_clusters.
+See db/repositories/cluster_postgres.py — PostgresClusterRepository.
 
 The HNSW index (m=16, ef_construction=64) is appropriate for 384-dim embeddings
 at moderate cluster counts (<100k). Tune m/ef_construction upward if recall

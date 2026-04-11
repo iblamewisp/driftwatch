@@ -70,35 +70,3 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     if denom == 0:
         return 0.0
     return float(np.dot(a, b) / denom)
-
-
-def kmeans_split(embeddings: np.ndarray, max_iter: int = 50) -> np.ndarray:
-    """
-    Split embeddings into 2 groups using k-means.
-    Initialises with the two most distant points (deterministic, good for BIRCH).
-    Returns a label array (0 or 1) for each embedding.
-    """
-    dists = np.sum((embeddings - embeddings[0]) ** 2, axis=1)
-    i1 = int(np.argmax(dists))
-    dists = np.sum((embeddings - embeddings[i1]) ** 2, axis=1)
-    i0 = int(np.argmax(dists))
-
-    c0, c1 = embeddings[i0].copy(), embeddings[i1].copy()
-    labels = np.zeros(len(embeddings), dtype=int)
-
-    for _ in range(max_iter):
-        d0 = np.sum((embeddings - c0) ** 2, axis=1)
-        d1 = np.sum((embeddings - c1) ** 2, axis=1)
-        new_labels = (d1 < d0).astype(int)
-
-        if np.array_equal(new_labels, labels):
-            break
-        labels = new_labels
-
-        mask0, mask1 = labels == 0, labels == 1
-        if mask0.any():
-            c0 = embeddings[mask0].mean(axis=0)
-        if mask1.any():
-            c1 = embeddings[mask1].mean(axis=0)
-
-    return labels

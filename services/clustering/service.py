@@ -5,7 +5,7 @@ Stream entry written by proxy:
     XADD driftwatch:clustering * response_id <uuid> request_text <str> response_text <str>
 
 This service:
-    1. Reads entries in adaptive batches (drain up to MAX_BATCH pairs or wait MAX_WAIT_MS)
+    1. Reads entries in adaptive batches (drain up to CLUSTERING_MAX_BATCH pairs or wait CLUSTERING_MAX_WAIT_MS)
     2. Embeds all texts in one LitServe call using interleaved batching:
            [req1, resp1, req2, resp2, ...]  →  [req1_emb, resp1_emb, req2_emb, resp2_emb, ...]
        Split by stride: request_embeddings = result[::2], response_embeddings = result[1::2]
@@ -13,7 +13,7 @@ This service:
     4. Stores both embeddings on the llm_responses row
     5. If auto golden set mode: inserts response_embedding into golden_set for that cluster
 
-MAX_BATCH is 32 *pairs* = 64 texts — stays within LitServe's max_batch_size=64.
+CLUSTERING_MAX_BATCH is 32 *pairs* = 64 texts — stays within LitServe's max_batch_size=64.
 """
 
 import asyncio
@@ -23,7 +23,7 @@ from uuid import UUID
 import redis.asyncio as aioredis
 
 from app.config import settings
-from db.repositories.cluster_repo import assign_cluster
+from db.vector_store import get_cluster_repository
 from db.session import AsyncSessionLocal
 from db.vector_store import get_vector_store
 from monitoring.logging import get_logger
@@ -32,17 +32,10 @@ from services.embedding.client import embed_batch
 
 logger = get_logger("clustering")
 
-STREAM_KEY = "driftwatch:clustering"
-CONSUMER_GROUP = "clustering-group"
-CONSUMER_NAME = "clustering-worker-1"
-MAX_BATCH = 32   # pairs — 64 texts total per LitServe call
-MAX_WAIT_MS = 200
-MAX_DELIVERY_ATTEMPTS = 3  # messages delivered this many times without ACK are dropped
-
 
 async def _ensure_stream_group(redis: aioredis.Redis) -> None:
     try:
-        await redis.xgroup_create(STREAM_KEY, CONSUMER_GROUP, id="0", mkstream=True)
+        await redis.xgroup_create(settings.CLUSTERING_STREAM_KEY, settings.CLUSTERING_CONSUMER_GROUP, id="0", mkstream=True)
     except Exception:
         pass  # group already exists
 
@@ -66,9 +59,11 @@ async def _process_batch(entries: list[dict]) -> None:
 
     # Assign clusters in parallel — absorption path is fully independent per item.
     # Advisory lock serializes only the rare "create new cluster" branch on the DB side.
+    cluster_repo = get_cluster_repository()
+
     async def _assign(response_id: UUID, req_emb: list[float], resp_emb: list[float]) -> UUID:
         async with AsyncSessionLocal() as session:
-            return await assign_cluster(session, response_id, req_emb, resp_emb)
+            return await cluster_repo.assign_cluster(session, response_id, req_emb, resp_emb)
 
     cluster_ids: list[UUID] = await asyncio.gather(*[
         _assign(rid, req, resp)
@@ -111,12 +106,12 @@ async def _recover_pending(redis: aioredis.Redis) -> None:
     2. Fetch remaining pending messages with xreadgroup("0") and process them.
     """
     pending_meta = await redis.xpending_range(
-        STREAM_KEY,
-        CONSUMER_GROUP,
+        settings.CLUSTERING_STREAM_KEY,
+        settings.CLUSTERING_CONSUMER_GROUP,
         min="-",
         max="+",
-        count=MAX_BATCH * 2,
-        consumername=CONSUMER_NAME,
+        count=settings.CLUSTERING_MAX_BATCH * 2,
+        consumername=settings.CLUSTERING_CONSUMER_NAME,
     )
     if not pending_meta:
         return
@@ -124,7 +119,7 @@ async def _recover_pending(redis: aioredis.Redis) -> None:
     skip_ids = [
         p["message_id"]
         for p in pending_meta
-        if p["times_delivered"] >= MAX_DELIVERY_ATTEMPTS
+        if p["times_delivered"] >= settings.CLUSTERING_MAX_DELIVERY_ATTEMPTS
     ]
     if skip_ids:
         logger.warning(
@@ -132,14 +127,14 @@ async def _recover_pending(redis: aioredis.Redis) -> None:
             count=len(skip_ids),
             ids=skip_ids,
         )
-        await redis.xack(STREAM_KEY, CONSUMER_GROUP, *skip_ids)
+        await redis.xack(settings.CLUSTERING_STREAM_KEY, settings.CLUSTERING_CONSUMER_GROUP, *skip_ids)
 
     # Fetch content of remaining pending messages (skip_ids already removed from PEL)
     results = await redis.xreadgroup(
-        groupname=CONSUMER_GROUP,
-        consumername=CONSUMER_NAME,
-        streams={STREAM_KEY: "0"},
-        count=MAX_BATCH,
+        groupname=settings.CLUSTERING_CONSUMER_GROUP,
+        consumername=settings.CLUSTERING_CONSUMER_NAME,
+        streams={settings.CLUSTERING_STREAM_KEY: "0"},
+        count=settings.CLUSTERING_MAX_BATCH,
     )
     if not results:
         return
@@ -156,7 +151,7 @@ async def _recover_pending(redis: aioredis.Redis) -> None:
 
     logger.info("recovering_pending_messages", count=len(entries))
     await _process_batch(entries)
-    await redis.xack(STREAM_KEY, CONSUMER_GROUP, *message_ids)
+    await redis.xack(settings.CLUSTERING_STREAM_KEY, settings.CLUSTERING_CONSUMER_GROUP, *message_ids)
 
 
 async def run() -> None:
@@ -164,7 +159,7 @@ async def run() -> None:
     await _ensure_stream_group(redis)
     await _recover_pending(redis)
 
-    logger.info("clustering_service_started", stream=STREAM_KEY)
+    logger.info("clustering_service_started", stream=settings.CLUSTERING_STREAM_KEY)
 
     buffer: list[dict] = []
     message_ids: list[str] = []
@@ -172,11 +167,11 @@ async def run() -> None:
 
     while True:
         results = await redis.xreadgroup(
-            groupname=CONSUMER_GROUP,
-            consumername=CONSUMER_NAME,
-            streams={STREAM_KEY: ">"},
-            count=MAX_BATCH,
-            block=MAX_WAIT_MS,
+            groupname=settings.CLUSTERING_CONSUMER_GROUP,
+            consumername=settings.CLUSTERING_CONSUMER_NAME,
+            streams={settings.CLUSTERING_STREAM_KEY: ">"},
+            count=settings.CLUSTERING_MAX_BATCH,
+            block=settings.CLUSTERING_MAX_WAIT_MS,
         )
 
         if results:
@@ -186,12 +181,12 @@ async def run() -> None:
                     message_ids.append(msg_id)
 
         elapsed_ms = (time.monotonic() - last_flush) * 1000
-        should_flush = len(buffer) >= MAX_BATCH or elapsed_ms >= MAX_WAIT_MS
+        should_flush = len(buffer) >= settings.CLUSTERING_MAX_BATCH or elapsed_ms >= settings.CLUSTERING_MAX_WAIT_MS
 
         if should_flush and buffer:
             try:
                 await _process_batch(buffer)
-                await redis.xack(STREAM_KEY, CONSUMER_GROUP, *message_ids)
+                await redis.xack(settings.CLUSTERING_STREAM_KEY, settings.CLUSTERING_CONSUMER_GROUP, *message_ids)
             except CircuitBreakerOpen as exc:
                 logger.error("litserve_circuit_open_batch_deferred", error=str(exc))
                 await asyncio.sleep(5)
