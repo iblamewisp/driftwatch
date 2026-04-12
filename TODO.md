@@ -33,6 +33,25 @@ Guarded by `pg_advisory_xact_lock(AdvisoryLock.CLUSTER_CREATION)` via `db/locks.
 Workers contending on the "no absorbing cluster" branch serialize, re-query ANN under
 the lock, and absorb into any cluster created while waiting.
 
+### [RESOLVED] Auto golden set: TOCTOU overshoot and post-split orphaned entries
+Two races in `_process_batch`:
+
+1. **TOCTOU within a batch** — all coroutines called `count_golden` in parallel, then all
+   inserted in parallel. N items for the same near-threshold cluster all read the same
+   count and all passed the cap check, overshooting `GOLDEN_SET_WARMUP` by up to N-1.
+
+2. **Post-split stale cluster_id** — `assign_cluster` returned OLD_ID, then
+   `run_cluster_split` committed (OLD deleted, goldens redistributed to A and B).
+   `count_golden(OLD_ID)` returned 0, `0 < GOLDEN_SET_WARMUP` passed, and
+   `insert_golden(cluster_id=OLD_ID)` wrote an orphaned row (no FK constraint on
+   `golden_set.cluster_id`) that no evaluator would ever find.
+
+**Fix:** Replaced the `count → filter → insert` pattern with `insert_golden_if_under_cap`
+(`db/repositories/pgvector_repo.py`). Opens a transaction, does `SELECT ... FOR UPDATE` on
+the cluster row (serializes concurrent callers for the same cluster; returns `None` if the
+cluster was deleted), re-counts under the lock, inserts only if under cap. Clustering
+service now calls this directly with no pre-count step.
+
 ### [RESOLVED] Sampling counter was process-local — blocked horizontal scaling
 Replaced in-memory global with `redis.incr("driftwatch:sampling_counter")`. Atomic,
 shared across all proxy replicas. If Redis is unreachable the request is skipped for

@@ -18,3 +18,14 @@ class QdrantRepository(AbstractVectorRepository):
 
     async def count_golden(self, cluster_id: UUID | None = None) -> int:
         raise NotImplementedError(_MSG)
+
+    async def insert_golden_if_under_cap(
+        self,
+        prompt: str,
+        embedding: list[float],
+        description: str,
+        cluster_id: UUID,
+        request_embedding: list[float] | None,
+        cap: int,
+    ) -> bool:
+        raise NotImplementedError(_MSG)

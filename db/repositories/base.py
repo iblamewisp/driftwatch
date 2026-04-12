@@ -38,3 +38,25 @@ class AbstractVectorRepository(ABC):
     async def count_golden(self, cluster_id: UUID | None = None) -> int:
         """Return number of golden set entries, optionally filtered by cluster."""
         ...
+
+    @abstractmethod
+    async def insert_golden_if_under_cap(
+        self,
+        prompt: str,
+        embedding: list[float],
+        description: str,
+        cluster_id: UUID,
+        request_embedding: list[float] | None,
+        cap: int,
+    ) -> bool:
+        """
+        Atomically insert a golden entry only if the cluster still exists and its
+        golden count is strictly less than cap. Returns True if inserted.
+
+        Guards against two races:
+          1. TOCTOU within a batch — multiple coroutines read the same count
+             then all insert, overshooting the cap.
+          2. Post-split stale cluster_id — cluster was deleted between assign_cluster
+             and here; inserting into a deleted cluster creates an orphaned row.
+        """
+        ...

@@ -119,7 +119,7 @@ Runs as a standalone asyncio process (not Celery). Reads from `driftwatch:cluste
 2. Main loop: `XREADGROUP` blocks up to `CLUSTERING_MAX_WAIT_MS`, flushes when buffer reaches `CLUSTERING_MAX_BATCH` pairs or timeout fires
 3. Per batch: interleaved embed `[req1, resp1, req2, resp2, ...]` → one LitServe call → split by stride → `asyncio.gather` over all `assign_cluster` calls in parallel
 4. After clustering: check which response_ids in the batch have `needs_evaluation=True` — enqueue `evaluate_response` Celery task for each, then flip the flag to False. Evaluator is guaranteed to start only after `cluster_id` and `response_embedding` are written.
-5. Auto golden set: if `GOLDEN_SET_MODE=auto` and cluster size < `GOLDEN_SET_WARMUP`, insert response embedding into `golden_set`
+5. Auto golden set: if `GOLDEN_SET_MODE=auto`, attempt `insert_golden_if_under_cap` for each response. Each call locks the cluster row (`SELECT FOR UPDATE`), verifies the cluster still exists (guards against a concurrent split deleting it between `assign_cluster` and here), re-counts goldens under the lock, and inserts only if under `GOLDEN_SET_WARMUP`. This prevents both batch-level TOCTOU overshoot and orphaned entries from stale cluster IDs.
 
 ### 3. Clustering logic (`db/repositories/cluster_postgres.py`, `services/clustering/birch.py`)
 

@@ -93,32 +93,26 @@ async def _process_batch(entries: list[dict]) -> None:
 
     vector_store = get_vector_store()
 
-    # Count golden set entries for all clusters in parallel
-    counts: list[int] = await asyncio.gather(*[
-        vector_store.count_golden(cluster_id=cid) for cid in cluster_ids
-    ])
-
-    to_insert = [
-        (cluster_id, count, resp_emb, req_emb, response_text)
-        for cluster_id, count, resp_emb, req_emb, response_text in zip(
-            cluster_ids, counts, response_embeddings, request_embeddings, response_texts
-        )
-        if count < settings.GOLDEN_SET_WARMUP
-    ]
-
-    await asyncio.gather(*[
-        vector_store.insert_golden(
+    # Each insert is atomic: locks the cluster row, checks the count, then inserts or
+    # skips — so neither concurrent items in the same batch nor a concurrent split can
+    # cause overshoot or orphaned golden entries.
+    inserted: list[bool] = await asyncio.gather(*[
+        vector_store.insert_golden_if_under_cap(
             prompt=response_text,
             embedding=resp_emb,
             description="auto",
             cluster_id=cluster_id,
             request_embedding=req_emb,
+            cap=settings.GOLDEN_SET_WARMUP,
         )
-        for cluster_id, _, resp_emb, req_emb, response_text in to_insert
+        for cluster_id, resp_emb, req_emb, response_text in zip(
+            cluster_ids, response_embeddings, request_embeddings, response_texts
+        )
     ])
 
-    for cluster_id, count, *_ in to_insert:
-        logger.info("golden_set_entry_added", cluster_id=str(cluster_id), cluster_size=count + 1)
+    for cluster_id, was_inserted in zip(cluster_ids, inserted):
+        if was_inserted:
+            logger.info("golden_set_entry_added", cluster_id=str(cluster_id))
 
 
 async def _recover_pending(redis: aioredis.Redis) -> None:
